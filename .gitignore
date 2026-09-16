@@ -1,1 +1,16 @@
 .DS_Store
+
+
+/06-Texture/19-TexturedCube
+/06-Texture/20-TexturedPyramidCube
+/06-Texture/21-CheckerBoard
+
+/__sphereLib
+/07-Lights/23-Sphere
+/07-Lights/24-DiffuseLightsOnCube
+/07-Lights/25-DiffuseLightsOnPyramid
+/07-Lights/26-PerVertexLightOnSphere
+/07-Lights/27-PerFragmentLightOnSphere
+/07-Lights/28-ToggleVertexFragmentLight
+/07-Lights/31-ThreeRotatingLightsOnSphere
+/07-Lights/29-24Spheres
