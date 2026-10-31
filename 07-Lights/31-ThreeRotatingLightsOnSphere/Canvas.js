@@ -1,0 +1,961 @@
+// Global Vartiables
+var canvas = null;
+var bFullScreen = false;
+var canvasOriginalWidth;
+var canvasOriginalHeight;
+
+//WebGPU related
+var clearColor;
+let device = null;
+let context = null;
+let queue = null;
+let canvasFormat = null;
+let animationFrameId = null;
+let renderPipeline = null;
+let buffer_uniform = null; // lights + material + toggle + mvp
+let bindingGroup_uniform = null;
+let perspectiveProjectionMatrix = null;
+let depthTexture = null;
+
+// For sphere
+let sphere = null;
+let numMeshIndices = 0;
+let buffer_position = null;
+let buffer_normal = null;
+let buffer_texcoord = null;
+let buffer_element = null;
+
+// for lights
+var lightAmbient = new Float32Array([
+    0.1, 0.1, 0.1, 1.0, // light 1 ambient
+    0.1, 0.1, 0.1, 1.0, // light 2 ambient
+    0.1, 0.1, 0.1, 1.0  // light 3 ambient
+]);
+var lightDiffuse = new Float32Array([
+    1.0, 0.0, 0.0, 1.0, // light 1 diffuse
+    0.0, 1.0, 0.0, 1.0, // light 2 diffuse
+    0.0, 0.0, 1.0, 1.0  // light 3 diffuse
+]);
+var lightSpecular = new Float32Array([
+    1.0, 0.0, 0.0, 1.0, // light 1 specular
+    0.0, 1.0, 0.0, 1.0, // light 2 specular
+    0.0, 0.0, 1.0, 1.0  // light 3 specular
+]);
+var lightPosition = new Float32Array([
+    0.0, 0.0, 0.0, 1.0, // light 1 position
+    0.0, 0.0, 0.0, 1.0, // light 2 position
+    0.0, 0.0, 0.0, 1.0  // light 3 position
+]);
+
+var materialAmbient = new Float32Array([0.1, 0.1, 0.1, 1.0]);
+var materialDiffuse = new Float32Array([1.0, 1.0, 1.0, 1.0]);
+var materialSpecular = new Float32Array([1.0, 1.0, 1.0, 1.0]);
+var materialShininess = new Float32Array([128.0, 0, 0, 1.0]);
+
+var lightAngle = 0.0;
+var lightRotateRadius = 25.0;
+
+var lKeyPressed = new Uint32Array([0, 0, 0, 0]); // we use X, 0 cause false
+
+var bLighting = false;
+
+// Animation related
+//requestAnimationFrame for rendering!.
+var requestAnimationFrame = window.requestAnimationFrame || window.webkitRequestAnimationFrame ||
+                            window.msRequestAnimationFrame || window.mozRequestAnimationFrame || 
+                            window.oRequestAnimationFrame || null;
+
+// TO Cancel rendering if needed in bacground processsing!
+var cancelAnimationFrame = window.cancelAnimationFrame || window.webkitCancelAnimationFrame ||
+                            window.webkitCancelRequestAnimationFrame || window.mozCancelAnimationFrame ||
+                            window.mozCancelRequestAnimationFrame || window.oCancelRequestAnimationFrame ||
+                            window.oCancelAnimationFrame || window.CancelRequestAnimationFrame ||
+                            window.msCancelAnimationFrame || null;
+
+// Onload function
+const main = async () => {
+
+    console.log("WebGPU Blue Screen of Death!!..");
+    //get canvas element
+    canvas = document.getElementById("AMC");
+    if(!canvas){
+        console.log("Failed to Obtain Canvas!");
+    }
+    else {
+        console.log("Canvas Obtained Successfully!!..");
+    }
+
+    canvasOriginalWidth = canvas.width;
+    canvasOriginalHeight = canvas.height;
+
+    //Register Event Handler Callback to the window!.
+    window.addEventListener("keydown", onKeyDown, false);
+    window.addEventListener("click", onMouseClick, false);
+    window.addEventListener("resize", resize, false);
+
+    // Best practice for WebGPU during fullscreen
+    document.addEventListener("fullscreenchange", onFullScreenChange, false);
+    document.addEventListener("webkitfullscreenchange", onFullScreenChange, false);
+
+    // Initialize WebGPU 
+    // Get GPU Interface
+    const gpu = navigator.gpu;
+    if(!gpu){
+        console.log("WebGPU is not supported in this browser!");
+        throw Error("WebGPU is not supported in this browser!");
+    }
+    else {
+        console.log("WebGPU is supported in this browser!");
+    }
+
+    // Get GPUAdapter object from GPU interface
+    const adapter = await gpu.requestAdapter();
+    if(!adapter){
+        console.log("Failed to get GPU Adapter!");
+        throw Error("Failed to get GPU Adapter!");
+    }
+    else {
+        console.log("GPU Adapter Obtained Successfully!!..");
+    }
+
+    // Get GPUDevice object from GPUAdapter object
+    device = await adapter.requestDevice();
+    if(!device){
+        console.log("Failed to get GPU Device!");
+        throw Error("Failed to get GPU Device!");
+    }
+    else {
+        console.log("GPU Device Obtained Successfully!!..");
+    }
+
+    // as browsers can be on mobile devices device may get lost maybe due to reset, switch, switchoff, disconnect, ect.
+    // in such cases, we may not have capturable error, so register one generic handler for uncaptured error with device
+    device.addEventListener("uncapturederror", onUnCapturedError);
+    device.lost.then(onDeviceLost);
+
+    // Call Stub Functions
+    initialize();
+
+    resize();
+    display();
+}
+
+// Functions
+const onUnCapturedError = (event) => {
+    // Code
+    console.log("Uncaptured Error Occured:", event.error.message);
+}
+
+const onDeviceLost = (info) => {
+    // Code
+    console.warn("Device Lost Reason:", info.reason, "Message:", info.message);
+    device = null;
+    queue = null;
+    renderPipeline = null;
+    buffer_uniform = null;
+    bindingGroup_uniform = null;
+    perspectiveProjectionMatrix = null;
+    depthTexture = null;
+
+    sphere = null;
+    numMeshIndices = 0;
+    buffer_position = null;
+    buffer_normal = null;
+    buffer_texcoord = null;
+    buffer_element = null;
+}
+
+const toggleFullScreen = () => {
+    //Code
+    var fullScreenElement = document.fullscreenElement || document.webkitFullScreenElement ||
+                            document.mozFullScreenElement || document.msFullscreenElement || null;
+
+    if(fullScreenElement == null) {
+        if(canvas.requestFullscreen){
+            canvas.requestFullscreen();
+        }
+        else if(canvas.mozRequestFullScreen) {
+            canvas.mozRequestFullScreen();
+        }
+        else if(canvas.webkitRequestFullscreen) {
+            canvas.webkitRequestFullscreen();
+        }
+        else if(canvas.msRequestFullscreen) {
+            canvas.msRequestFullscreen();
+        }
+
+        //In webGL we initialized bFullScreen here not thinking about async operations
+        // but in WebGPU, considering async cross browser compatibility we will do this in onFullScreenChange event handler
+    }
+    else {
+        if(document.exitFullscreen) {
+            document.exitFullscreen();
+        }
+        else if(document.mozCancelFullScreen) {
+            document.mozCancelFullScreen();
+        }
+        else if(document.webkitExitFullscreen) {
+            document.webkitExitFullscreen();
+        }
+        else if(document.msExitFullscreen) {
+            document.msExitFullscreen();
+        }
+
+        //In webGL we initialized bFullScreen here not thinking about async operations
+        // but in WebGPU, considering async cross browser compatibility we will do this in onFullScreenChange event handler
+    }
+}
+
+// Event Handlers
+const onFullScreenChange = () => {
+    // Code
+    var fullScreenElement = document.fullscreenElement || document.webkitFullScreenElement ||
+                            document.mozFullScreenElement || document.msFullscreenElement || null;
+
+    if(fullScreenElement != null) {
+        bFullScreen = true;
+        console.log("Window is in Fullscreen Mode!");
+    }
+    else {
+        bFullScreen = false;
+        console.log("Window is in Normal Mode!");
+    }
+
+    // Resize the canvas to fit the window
+    resize();
+}
+
+// Initialize
+const initialize = () => {
+    // Code!
+
+    // Get Queue from Device
+    // Remember: getting queue from device is always synchronous
+    queue = device.queue;
+
+    console.log("WebGPU Queue Obtained Successfully!!..");
+
+    // Get WebGPU context from canvas element
+    context = canvas.getContext("webgpu");
+    if(!context){
+        console.log("Failed to get WebGPU Context!");
+        throw Error("Failed to get WebGPU Context!");
+    }
+    else {
+        console.log("WebGPU Context Obtained Successfully!!..");
+    }
+    
+    // Get preferred canvas format
+    canvasFormat = navigator.gpu.getPreferredCanvasFormat();
+
+    //configure the canvas by using obtained format to become functionable and suit our needs
+    const canvasConfiguration = {
+        device: device,
+        format: canvasFormat,
+        usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+        alphaMode: "opaque"
+    };
+    context.configure(canvasConfiguration);
+    console.log("WebGPU Context Configured with Format:", canvasFormat);
+
+    // Write vertex shader code in WGSL [WGSL is stricly typed, with no implicit type conversions or promotions]
+    const vertexShaderSourceCode = `
+        struct VertexOutput {
+            @builtin(position) Position: vec4<f32>,
+            @location(0) t_normal: vec3<f32>,
+            @location(1) viewerVector: vec3<f32>,
+            @location(2) lightDirectionOne: vec3<f32>,
+            @location(3) lightDirectionTwo: vec3<f32>,
+            @location(4) lightDirectionThree: vec3<f32>,
+        };
+
+        struct Uniforms {
+            modelMatrix: mat4x4<f32>,
+            viewMatrix: mat4x4<f32>,
+            projectionMatrix: mat4x4<f32>,
+
+            lightPosition: array<vec4<f32>, 3>,
+            lightAmbient: array<vec4<f32>, 3>,
+            lightDiffuse: array<vec4<f32>, 3>,
+            lightSpecular: array<vec4<f32>, 3>,
+
+            materialAmbient: vec4<f32>,
+            materialDiffuse: vec4<f32>,
+            materialSpecular: vec4<f32>,
+            materialShininess: vec4<f32>,
+            lKeyPressed: vec4<u32>
+        };
+
+        @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+        fn mat3FromMat4(m:mat4x4<f32>)->mat3x3<f32> {
+            return(mat3x3<f32>(m[0].xyz, m[1].xyz, m[2].xyz));
+        }
+
+        fn inverse3x3(m:mat3x3<f32>)->mat3x3<f32>{
+            let determinant = m[0][0] * (m[1][1]*m[2][2] - m[2][1]*m[1][2]) - 
+                            m[1][0] * (m[0][1]*m[2][2] - m[2][1]*m[0][2]) + 
+                            m[2][0] * (m[0][1]*m[1][2] - m[1][1]*m[0][2]);
+            let inverse_determinant = 1.0 / determinant;
+            let column0 = vec3<f32>
+            (
+                (m[1][1]*m[2][2] - m[2][1]*m[1][2]) * inverse_determinant,
+                (m[2][1]*m[0][2] - m[0][1]*m[2][2]) * inverse_determinant,
+                (m[0][1]*m[1][2] - m[1][1]*m[0][2]) * inverse_determinant
+            );
+            let column1 = vec3<f32>
+            (
+                (m[2][0]*m[1][2] - m[1][0]*m[2][2]) * inverse_determinant,
+                (m[0][0]*m[2][2] - m[2][0]*m[0][2]) * inverse_determinant,
+                (m[1][0]*m[0][2] - m[0][0]*m[1][2]) * inverse_determinant
+            );
+            let column2 = vec3<f32>
+            (
+                (m[1][0]*m[2][1] - m[2][0]*m[1][1]) * inverse_determinant,
+                (m[2][0]*m[0][1] - m[0][0]*m[2][1]) * inverse_determinant,
+                (m[0][0]*m[1][1] - m[1][0]*m[0][1]) * inverse_determinant
+            );
+            return(mat3x3<f32>(column0, column1, column2));
+        }
+
+        @vertex fn main(@location(0) pos: vec3<f32>, @location(1) normal: vec3<f32>) -> VertexOutput {
+            var output: VertexOutput;
+
+            if(uniforms.lKeyPressed.x == 1u) {
+                let eyeCoords: vec4<f32> = uniforms.viewMatrix * uniforms.modelMatrix * vec4<f32>(pos, 1.0);
+                let modelViewMatrix: mat3x3<f32> = mat3FromMat4(uniforms.viewMatrix * uniforms.modelMatrix);
+                let normalMatrix: mat3x3<f32> = transpose(inverse3x3(modelViewMatrix));
+                let t_normal: vec3<f32> = normalMatrix * normal;
+            
+                let lightDirectionOne: vec3<f32> = uniforms.lightPosition[0].xyz - eyeCoords.xyz;
+                let lightDirectionTwo: vec3<f32> = uniforms.lightPosition[1].xyz - eyeCoords.xyz;
+                let lightDirectionThree: vec3<f32> = uniforms.lightPosition[2].xyz - eyeCoords.xyz;
+            
+                let viewerVector: vec3<f32> = -eyeCoords.xyz;
+
+                output.t_normal = t_normal;
+                output.lightDirectionOne = lightDirectionOne;
+                output.lightDirectionTwo = lightDirectionTwo;
+                output.lightDirectionThree = lightDirectionThree;
+                output.viewerVector = viewerVector;
+            }
+
+            output.Position = uniforms.projectionMatrix * uniforms.viewMatrix * uniforms.modelMatrix * vec4<f32>(pos, 1.0);
+
+            return output;
+        }
+    `;
+
+    // Create Vertex shader module from source code //! GPUShaderModuleDescriptor
+    const shaderModuleDescriptor_vertex = {
+        code: vertexShaderSourceCode,
+    };
+
+    // Create Vertex Shader Module from Descriptor //! GPUShaderModule
+    const vertexShaderModule = device.createShaderModule(shaderModuleDescriptor_vertex);
+    if(!vertexShaderModule){
+        console.log("Failed to create Vertex Shader Module!");
+        throw Error("Failed to create Vertex Shader Module!");
+    }
+    else {
+        console.log("Vertex Shader Module Created Successfully!!..");
+    }
+
+    // Write fragment shader code in WGSL
+    const fragmentShaderSourceCode = `
+        struct VertexOutput {
+            @builtin(position) Position: vec4<f32>,
+            @location(0) t_normal: vec3<f32>,
+            @location(1) viewerVector: vec3<f32>,
+            @location(2) lightDirectionOne: vec3<f32>,
+            @location(3) lightDirectionTwo: vec3<f32>,
+            @location(4) lightDirectionThree: vec3<f32>,
+        };
+
+        struct Uniforms {
+            modelMatrix: mat4x4<f32>,
+            viewMatrix: mat4x4<f32>,
+            projectionMatrix: mat4x4<f32>,
+
+            lightPosition: array<vec4<f32>, 3>,
+            lightAmbient: array<vec4<f32>, 3>,
+            lightDiffuse: array<vec4<f32>, 3>,
+            lightSpecular: array<vec4<f32>, 3>,
+
+            materialAmbient: vec4<f32>,
+            materialDiffuse: vec4<f32>,
+            materialSpecular: vec4<f32>,
+            materialShininess: vec4<f32>,
+            lKeyPressed: vec4<u32>
+        };
+
+        @group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+        @fragment fn main(input: VertexOutput) -> @location(0) vec4<f32> {
+            var phong_ads_light: vec3<f32> = vec3<f32>(0.0, 0.0, 0.0);
+
+            if(uniforms.lKeyPressed.x == 1u) {
+                let n_tNormal: vec3<f32> = normalize(input.t_normal);
+
+                var n_lightDirections = array<vec3<f32>, 3>(
+                    normalize(input.lightDirectionOne),
+                    normalize(input.lightDirectionTwo),
+                    normalize(input.lightDirectionThree)
+                );
+
+                let n_viewerVector: vec3<f32> = normalize(input.viewerVector);
+
+                for (var i: u32 = 0u; i < 3u; i = i + 1u) {
+                    let tn_dot_ld: f32 = max(dot(n_tNormal, n_lightDirections[i]), 0.0);
+                    let reflectionVector: vec3<f32> = reflect(-n_lightDirections[i], n_tNormal);
+                    let specularFactor: f32 = pow(max(dot(reflectionVector, n_viewerVector), 0.0), uniforms.materialShininess.x);
+
+                    let ambient: vec3<f32> = (uniforms.lightAmbient[i].xyz * uniforms.materialAmbient.xyz);
+                    let diffuse: vec3<f32> = (uniforms.lightDiffuse[i].xyz * uniforms.materialDiffuse.xyz) * tn_dot_ld;
+                    let specular: vec3<f32> = (uniforms.lightSpecular[i].xyz * uniforms.materialSpecular.xyz) * specularFactor;
+
+                    phong_ads_light = phong_ads_light + ambient + diffuse + specular;
+                }
+                
+            } else {
+                phong_ads_light = vec3<f32>(1.0, 1.0, 1.0);
+            }
+
+            return vec4<f32>(phong_ads_light, 1.0);
+        }
+    `;
+
+    // Create Fragment shader module from source code //! GPUShaderModuleDescriptor
+    const shaderModuleDescriptor_fragment = {
+        code: fragmentShaderSourceCode,
+    };
+
+    // Create Fragment Shader Module from Descriptor //! GPUShaderModule
+    const fragmentShaderModule = device.createShaderModule(shaderModuleDescriptor_fragment);
+    if(!fragmentShaderModule){
+        console.log("Failed to create Fragment Shader Module!");
+        throw Error("Failed to create Fragment Shader Module!");
+    }
+    else {
+        console.log("Fragment Shader Module Created Successfully!!..");
+    }
+
+    //Create Sphere Mesh
+    sphere = new Mesh();
+    makeSphere(sphere, 2.0, 30, 30);
+    numMeshIndices = sphere.getIndexCount();
+
+    console.log("Sphere Mesh Created", "Num Elements:", numMeshIndices, "Num Vertices:", sphere.getVertexCount());
+
+    const meshData = sphere.getMeshData();
+
+    // create vertex buffer data for position, normal, texcoord and element
+
+    buffer_position = createVertexBuffer(meshData.verticesArray);
+    if(!buffer_position){
+        console.log("Failed to create Position Buffer!");
+        throw Error("Failed to create Position Buffer!");
+    }
+    else {
+        console.log("Position Buffer Created Successfully!!..");
+    }
+
+    buffer_normal = createVertexBuffer(meshData.normalsArray);
+    if(!buffer_normal){
+        console.log("Failed to create Normal Buffer!");
+        throw Error("Failed to create Normal Buffer!");
+    }
+    else {
+        console.log("Normal Buffer Created Successfully!!..");
+    }
+
+    buffer_texcoord = createVertexBuffer(meshData.texCoordsArray);
+    if(!buffer_texcoord){
+        console.log("Failed to create Texcoord Buffer!");
+        throw Error("Failed to create Texcoord Buffer!");
+    }
+    else {
+        console.log("Texcoord Buffer Created Successfully!!..");
+    }
+
+    buffer_element = createIndexBuffer(meshData.indicesArray);
+    if(!buffer_element){
+        console.log("Failed to create Element Buffer!");
+        throw Error("Failed to create Element Buffer!");
+    }
+    else {
+        console.log("Element Buffer Created Successfully!!..");
+    }
+
+    // Uniform Plumbing!
+    const bindGroupLayout = createBindGroupLayoutUniform(0, GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, "uniform");
+
+    // create pipeline layout descriptor //! GPUPipelineLayoutDescriptor
+    const pipelineLayoutDescriptor = {
+        bindGroupLayouts: [bindGroupLayout],
+    };
+
+    // create pipeline layout from descriptor //! GPUPipelineLayout
+    const pipelineLayout = device.createPipelineLayout(pipelineLayoutDescriptor);
+    if(!pipelineLayout){
+        console.log("Failed to create Pipeline Layout!");
+        throw Error("Failed to create Pipeline Layout!");
+    }
+    else {
+        console.log("Pipeline Layout Created Successfully!!..");
+    }
+
+    // create uniform buffer
+    let myUniformSize = (Float32Array.BYTES_PER_ELEMENT * 16) * 3; // 4x4 matrix of 32-bit floats = 16 * 4 bytes = for model, view, projection matrices
+    myUniformSize += (Float32Array.BYTES_PER_ELEMENT * 4) * 4 * 3; // 4x4 vector of 32-bit floats = 4 * 4 bytes = for light position, ambient, diffuse, specular, * 3 repeated for 3 lights
+    myUniformSize += (Float32Array.BYTES_PER_ELEMENT * 4) * 4; // 4x1 vector of 32-bit floats = 4 * 4 bytes = material ambient, diffuse, specular, shininess
+    myUniformSize += (Uint32Array.BYTES_PER_ELEMENT * 4); // 4x1 vector of 32-bit unsigned integers = 4 * 4 bytes = for lKeyPressed
+
+    buffer_uniform = createUniformBuffer(myUniformSize, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST);
+
+    // create Bind Group for MVP Uniform Buffer
+    bindingGroup_uniform = createBindGroupForUniform(buffer_uniform, 0, myUniformSize, 0, bindGroupLayout);
+
+    // render pipeline
+    // create vertex attribute for position //! GPUVertexAttribute
+    const positionVertexAttribute = {
+        shaderLocation: 0, // this matches the @location(0) in the shader code
+        offset: 0,
+        format: "float32x3", // this is a vec3<f32>
+    };
+
+    // create vertex attribute for normal //! GPUVertexAttribute
+    const normalVertexAttribute = {
+        shaderLocation: 1, // this matches the @location(1) in the shader code
+        offset: 0,
+        format: "float32x3", // this is a vec3<f32>
+    };
+
+    // create vertex buffer layout for position //! GPUVertexBufferLayout
+    const positionVertexBufferLayout = {
+        attributes: [positionVertexAttribute, normalVertexAttribute],
+        arrayStride: Float32Array.BYTES_PER_ELEMENT * 3, // 3 floats * 4 bytes = 12 bytes [ 4 * 3 would works toom but this more accurate ]
+        stepMode: "vertex", // jump vertex by vertex not instance by instance
+    };
+
+    // create vertex state //! GPUVertexState
+    const vertexShaderState = {
+        module: vertexShaderModule,
+        entryPoint: "main",
+        buffers: [positionVertexBufferLayout],
+    };
+
+    // Fragment State
+    // color target state //! GPUColorTargetState
+    const colorTargetState = {
+        format: canvasFormat,
+    };
+
+    // create fragment state //! GPUFragmentState
+    const fragmentShaderState = {
+        module: fragmentShaderModule,
+        entryPoint: "main",
+        targets: [colorTargetState],
+    };
+
+    // create primitive state //! GPUPrimitiveState
+    const primitiveState = {
+        frontFace: "ccw", // counter-clockwise front face
+        cullMode: "none", // no culling
+        topology: "triangle-list",
+    };
+
+    // Depth Stencil State //! GPUDepthStencilState
+    const depthStencilState = {
+        format: "depth24plus-stencil8", // without stencil buffer, we can use "depth24plus" or "depth32float"
+        depthWriteEnabled: true,
+        depthCompare: "less-equal", // GL_LEQUAL equivalent
+    };
+
+    // create render pipeline descriptor //! GPURenderPipelineDescriptor
+    const renderPipelineDescriptor = {
+        layout: pipelineLayout,
+        vertex: vertexShaderState,
+        fragment: fragmentShaderState,
+        primitive: primitiveState,
+        depthStencil: depthStencilState,
+    };
+
+    // create render pipeline from descriptor //! GPURenderPipeline
+    renderPipeline = device.createRenderPipeline(renderPipelineDescriptor);
+    if(!renderPipeline){
+        console.log("Failed to create Render Pipeline!");
+        throw Error("Failed to create Render Pipeline!");
+    }
+    else {
+        console.log("Render Pipeline Created Successfully!!..");
+    }
+
+    // initialize perspective projection matrix to identity
+    perspectiveProjectionMatrix = mat4.create();
+
+    // Set Clear Color
+    clearColor = {r: 0.0, g: 0.0, b: 0.0, a: 1.0};
+}
+
+// UDF
+
+const createVertexBuffer = (_vertexData) => {
+    // create vertex buffer descriptor //! GPUBufferDescriptor
+    const bufferDescriptor = {
+        size: _vertexData.byteLength,
+        usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
+    };
+
+    // create vertex buffer from descriptor //! GPUBuffer
+    const vertexBuffer = device.createBuffer(bufferDescriptor);
+    if(!vertexBuffer){
+        return null;
+    }
+
+    // write data to vertex buffer
+    queue.writeBuffer(vertexBuffer, 0, _vertexData, 0, _vertexData.length);
+
+    return vertexBuffer;
+}
+
+const createIndexBuffer = (_indexData) => {
+    // create index buffer descriptor //! GPUBufferDescriptor
+    const bufferDescriptor = {
+        size: _indexData.byteLength,
+        usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
+    };
+
+    // create index buffer from descriptor //! GPUBuffer
+    const indexBuffer = device.createBuffer(bufferDescriptor);
+    if(!indexBuffer){
+        return null;
+    }
+
+    // write data to index buffer
+    queue.writeBuffer(indexBuffer, 0, _indexData, 0, _indexData.length);
+
+    return indexBuffer;
+}
+
+const createBindGroupLayoutUniform = (_bindingIndex, _shaderStageVisibility, _uniformType) => {
+    // Uniform Plumbing!
+    // create bind group layout entry for mvp uniform buffer //! GPUBindGroupLayoutEntry
+    const bindGroupLayoutEntry = {
+        binding: _bindingIndex, // this matches the @binding(0) in the shader code
+        visibility: _shaderStageVisibility, // this uniform is used in the vertex shader
+        buffer: {
+            type: _uniformType, // this is a uniform buffer
+        },
+    };
+
+    // create bind group layout descriptor //! GPUBindGroupLayoutDescriptor
+    const bindGroupLayoutDescriptor = {
+        entries: [bindGroupLayoutEntry],
+    };
+
+    // create bind group layout from descriptor //! GPUBindGroupLayout
+    const bindGroupLayout = device.createBindGroupLayout(bindGroupLayoutDescriptor);
+    if(!bindGroupLayout){
+        console.log("Failed to create Bind Group Layout!");
+        throw Error("Failed to create Bind Group Layout!");
+    }
+    else {
+        console.log("Bind Group Layout Created Successfully!!..");
+    }
+
+    return bindGroupLayout;
+}
+
+const createUniformBuffer = (_uniformBufferSize, _uniformBufferUsage) => {
+    // create uniform buffer descriptor //! GPUBufferDescriptor
+    const bufferDescriptor = {
+        size: _uniformBufferSize,
+        usage: _uniformBufferUsage,
+    };
+
+    // create uniform buffer from descriptor //! GPUBuffer
+    const uniformBuffer = device.createBuffer(bufferDescriptor);
+    if(!uniformBuffer){
+        console.log("Failed to create Uniform Buffer!");
+        throw Error("Failed to create Uniform Buffer!");
+    }
+    else {
+        console.log("Uniform Buffer Created Successfully!!..");
+    }
+
+    return uniformBuffer;
+}
+
+const createBindGroupForUniform = (_uniformBuffer, _uniformBufferOffset, _uniformBufferSize, _bindingIndex, _bindGroupLayout) => {
+    // create buffer binding for mvp uniform buffer //! GPUBufferBinding
+    const bufferBinding = {
+        buffer: _uniformBuffer,
+        offset: _uniformBufferOffset,
+        size: _uniformBufferSize,
+    };
+
+    // create bind group entry for mvp uniform buffer //! GPUBindGroupEntry
+    const bindGroupEntry = {
+        binding: _bindingIndex, // this matches the @group(0) in the shader code
+        resource: bufferBinding,
+    };
+
+    // create bind group descriptor //! GPUBindGroupDescriptor
+    const bindGroupDescriptor = {
+        layout: _bindGroupLayout,
+        entries: [bindGroupEntry],
+    };
+
+    // create bind group from descriptor //! GPUBindGroup
+    const bindGroup = device.createBindGroup(bindGroupDescriptor);
+    if(!bindGroup){
+        console.log("Failed to create Bind Group!");
+        throw Error("Failed to create Bind Group!");
+    }
+    else {
+        console.log("Bind Group Created Successfully!!..");
+    }
+
+    return bindGroup;
+}
+
+const resize = () => {
+    if(bFullScreen === true) {
+        canvas.width = window.innerWidth;
+        canvas.height = window.innerHeight;
+    }
+    else {
+        canvas.width = canvasOriginalWidth;
+        canvas.height = canvasOriginalHeight;
+    }
+
+    if(device !== null) {
+        if(depthTexture !== null) {
+            depthTexture.destroy();
+            depthTexture = null;
+        }
+
+        // Depth Texture for Depth Buffer
+        const depthTextureDescriptor = {
+            size: [canvas.width, canvas.height],
+            dimension: "2d",
+            format: "depth24plus-stencil8",
+            usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+        };
+
+        depthTexture = device.createTexture(depthTextureDescriptor);
+        if(!depthTexture){
+            console.log("Failed to create Depth Texture!");
+            throw Error("Failed to create Depth Texture!");
+        }
+    }
+
+    // Update Perspective Projection Matrix
+    const aspectRatio = parseFloat(canvas.width) / parseFloat(canvas.height);
+    mat4.perspective(perspectiveProjectionMatrix, degToRad(45.0), aspectRatio, 0.1, 100.0);
+}
+
+const display = () => {
+    //Code
+    // Device maybe lost, initialize maybe not done
+    if(device === null){
+        return;
+    }
+
+    // Get Command Encoder from Device, due to async nature of WebGPU, 
+    // we will get command encoder in display function, not in initialize function
+    const commandEncoder = device.createCommandEncoder();
+    if(!commandEncoder){
+        console.log("Failed to get Command Encoder!");
+        throw Error("Failed to get Command Encoder!");
+    }
+
+    // Create Render Pass Color Attachment //! GPURenderPassColorAttachment
+    const renderPassColorAttachment = {
+        view: context.getCurrentTexture().createView(),
+        clearValue: clearColor,
+        loadOp: "clear",
+        storeOp: "store"
+    };
+
+    // Create Render Pass Depth Stencil Attachment //! GPURenderPassDepthStencilAttachment
+    const renderPassDepthStencilAttachment = {
+        view: depthTexture.createView(),
+        depthClearValue: 1.0,
+        depthLoadOp: "clear",
+        depthStoreOp: "store",
+        stencilClearValue: 0,
+        stencilLoadOp: "clear",
+        stencilStoreOp: "store"
+    };
+
+    // Create Render Pass Descriptor //! GPURenderPassDescriptor
+    const renderPassDescriptor = {
+        colorAttachments: [renderPassColorAttachment],
+        depthStencilAttachment: renderPassDepthStencilAttachment
+    };
+
+    // Transformations
+    const modelMatrix = mat4.create();
+    const viewMatrix = mat4.create();
+
+    mat4.translate(modelMatrix, modelMatrix, [0.0, 0.0, -6.0]);
+
+    if(bLighting) {
+
+        // light one - orbits in YZ plane - around X
+        lightPosition[0] = 0.0;
+        lightPosition[1] = lightRotateRadius * Math.sin(degToRad(lightAngle));
+        lightPosition[2] = lightRotateRadius * Math.cos(degToRad(lightAngle));
+        lightPosition[3] = 1.0;
+
+        // light two - orbits in XZ plane - around Y
+        lightPosition[4] = lightRotateRadius * Math.cos(degToRad(lightAngle));
+        lightPosition[5] = 0.0;
+        lightPosition[6] = lightRotateRadius * Math.sin(degToRad(lightAngle));
+        lightPosition[7] = 1.0;
+
+        // light three - orbits in XY plane - around Z
+        lightPosition[8] = lightRotateRadius * Math.sin(degToRad(lightAngle));
+        lightPosition[9] = lightRotateRadius * Math.cos(degToRad(lightAngle));
+        lightPosition[10] = 0.0;
+        lightPosition[11] = 1.0;
+
+    }
+
+    lKeyPressed[0] = bLighting ? 1 : 0;
+
+
+    // Uniform buffer layout (WGSL std140-style rules for the uniform address space)
+const MAT4_SIZE = 64;        // mat4x4<f32>
+const VEC4_SIZE = 16;        // vec4<f32> / vec4<u32>
+const VEC4_ARRAY3_SIZE = 48; // array<vec4<f32>, 3> -> stride 16 * 3
+
+    // Write data to Uniform Buffer
+    // Offsets follow the WGSL 'Uniforms' struct layout:
+    // mat4x4<f32> = 64 bytes, vec4 = 16 bytes, array<vec4, 3> = 3 * 16 = 48 bytes.
+    queue.writeBuffer(buffer_uniform, 0, modelMatrix, 0, modelMatrix.length);
+    queue.writeBuffer(buffer_uniform, 64, viewMatrix, 0, viewMatrix.length);
+    queue.writeBuffer(buffer_uniform, 128, perspectiveProjectionMatrix, 0, perspectiveProjectionMatrix.length);
+
+    queue.writeBuffer(buffer_uniform, 192, lightPosition, 0, lightPosition.length);
+    queue.writeBuffer(buffer_uniform, 240, lightAmbient, 0, lightAmbient.length);
+    queue.writeBuffer(buffer_uniform, 288, lightDiffuse, 0, lightDiffuse.length);
+    queue.writeBuffer(buffer_uniform, 336, lightSpecular, 0, lightSpecular.length);
+
+    queue.writeBuffer(buffer_uniform, 384, materialAmbient, 0, materialAmbient.length);
+    queue.writeBuffer(buffer_uniform, 400, materialDiffuse, 0, materialDiffuse.length);
+    queue.writeBuffer(buffer_uniform, 416, materialSpecular, 0, materialSpecular.length);
+    queue.writeBuffer(buffer_uniform, 432, materialShininess, 0, materialShininess.length);
+    queue.writeBuffer(buffer_uniform, 448, lKeyPressed, 0, lKeyPressed.length);
+
+    // Create Render Pass Encoder from Command Encoder //! GPURenderPassEncoder
+    const renderPassEncoder = commandEncoder.beginRenderPass(renderPassDescriptor);
+    if(!renderPassEncoder){
+        console.log("Failed to get Render Pass Encoder!");
+        throw Error("Failed to get Render Pass Encoder!");
+    }
+
+    renderPassEncoder.setPipeline(renderPipeline);
+    renderPassEncoder.setViewport(0, 0, canvas.width, canvas.height, 0, 1);
+    renderPassEncoder.setScissorRect(0, 0, canvas.width, canvas.height);
+
+    renderPassEncoder.setVertexBuffer(0, buffer_position);
+    renderPassEncoder.setVertexBuffer(1, buffer_normal);
+    renderPassEncoder.setIndexBuffer(buffer_element, "uint16");
+    renderPassEncoder.setBindGroup(0, bindingGroup_uniform);
+
+    renderPassEncoder.drawIndexed(numMeshIndices);
+
+    // End Render Pass
+    renderPassEncoder.end();
+
+    // Finish Command Encoder and submit Command Buffer to Queue for execution
+    queue.submit([commandEncoder.finish()]);
+
+    update();
+
+    // Animation Loop
+    animationFrameId = requestAnimationFrame(display);
+}
+
+const update = () =>{
+    // Code!
+    lightAngle += 0.5;
+    if(lightAngle >= 360.0){
+        lightAngle = 0.0;
+    }
+}
+
+const uninitialize = () => {
+    // Code!
+    // Use Animation Frame Id to cancel rendering if needed in background processing!
+    if(animationFrameId){
+        cancelAnimationFrame(animationFrameId);
+        animationFrameId = null;
+    }
+
+    if(depthTexture){
+        depthTexture.destroy();
+        depthTexture = null;
+    }
+
+    // Cleanup Resources
+    if(context){
+        context.unconfigure();
+        context = null;
+    }
+
+    // Cleanup Device
+    if(device){
+        device.destroy();
+        device = null;
+        queue = null;
+        renderPipeline = null;
+        buffer_uniform = null;
+        bindingGroup_uniform = null;
+
+        buffer_position = null;
+        buffer_normal = null;
+        buffer_texcoord = null;
+        buffer_element = null;
+    }
+
+    perspectiveProjectionMatrix = null;
+    sphere = null;
+
+    console.log("WebGPU Resources Uninitialized!");
+}
+
+const onKeyDown = (event) => {
+    // Code!
+    switch(event.key) {
+
+        case "Escape":
+            uninitialize();
+            window.close(); // this may not work in all browsers
+            break;
+        
+        case "f":
+        case "F":
+            toggleFullScreen();
+            break;
+
+        case "l":
+        case "L":
+            bLighting = !bLighting;
+            break;
+
+        default:
+            break;
+    }
+}
+
+const onMouseClick = (event) => {
+    // Code!
+}
+
+const degToRad = (angleInDegrees) => {
+    return (angleInDegrees * Math.PI / 180.0);
+}
